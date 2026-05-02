@@ -1,7 +1,3 @@
-// main.cc - Práctica 4 CAR
-// Análisis forense de imágenes con OpenMP + std::async
-// Joaquín y Linxi
-
 #include <stdio.h>
 #include <math.h>
 #include <stdlib.h>
@@ -18,8 +14,6 @@
 #include <future>    // para std::async y std::future
 
 
-// Kernel SRM 3x3. Es un filtro fijo (los valores no cambian)
-// que sirve para resaltar el ruido de alta frecuencia de la imagen.
 Image<float> get_srm_3x3() {
     Image<float> kernel(3, 3, 1);
     kernel.set(0, 0, 0, -1); kernel.set(0, 1, 0, 2); kernel.set(0, 2, 0, -1);
@@ -28,8 +22,7 @@ Image<float> get_srm_3x3() {
     return kernel;
 }
 
-// Versión 5x5 del mismo filtro. Coge una vecindad más grande
-// así que tarda más pero detecta patrones más amplios.
+
 Image<float> get_srm_5x5() {
     Image<float> kernel(5, 5, 1);
     kernel.set(0, 0, 0, -1); kernel.set(0, 1, 0, 2); kernel.set(0, 2, 0, -2); kernel.set(0, 3, 0, 2); kernel.set(0, 4, 0, -1);
@@ -40,8 +33,7 @@ Image<float> get_srm_5x5() {
     return kernel;
 }
 
-// Selector. Solo aceptamos kernel de 3 o 5, el assert evita que
-// alguien pase otro tamaño por error y luego haya un return raro.
+
 Image<float> get_srm_kernel(int size) {
     assert(size == 3 || size == 5);
     switch(size){
@@ -54,9 +46,6 @@ Image<float> get_srm_kernel(int size) {
 }
 
 
-// SRM = aplicar el filtro de ruido a la imagen.
-// Pasos: gris -> float -> convolución con el kernel -> abs -> normalizar -> 0..255 -> uchar.
-// La convolución de dentro ya está paralelizada con OpenMP en image.h.
 Image<unsigned char> compute_srm(const Image<unsigned char> &image, int kernel_size) {
     auto begin = std::chrono::steady_clock::now();
     std::cout<<"Computing SRM "<<kernel_size<<"x"<<kernel_size<<"..."<<std::endl;
@@ -73,9 +62,7 @@ Image<unsigned char> compute_srm(const Image<unsigned char> &image, int kernel_s
 }
 
 
-// DCT por bloques. Aquí es donde más ganamos paralelizando porque
-// los bloques son independientes entre sí (cada uno escribe en su
-// propia región de la imagen).
+// DCT por bloques. 
 Image<unsigned char> compute_dct(const Image<unsigned char> &image, int block_size, bool invert) {
     auto begin = std::chrono::steady_clock::now();
     std::cout<<"Computing"; 
@@ -87,10 +74,6 @@ Image<unsigned char> compute_dct(const Image<unsigned char> &image, int block_si
     Image<float> grayscale = image.convert<float>().to_grayscale();
     std::vector<Block<float>> blocks = grayscale.get_blocks(block_size);
 
-    // Aquí está el reparto entre hilos. Usamos schedule(dynamic) porque
-    // cuando invert=true los bloques tienen un poco más de trabajo
-    // (hay que anular las bajas frecuencias y reconstruir), así no
-    // se queda ningún hilo parado esperando a otro más lento.
     #pragma omp parallel for schedule(dynamic)
     for(int i=0;i<(int)blocks.size();i++){
         // Cada hilo crea su propia matriz auxiliar -> nada compartido.
@@ -118,13 +101,6 @@ Image<unsigned char> compute_dct(const Image<unsigned char> &image, int block_si
 }
 
 
-// ELA = Error Level Analysis. Idea: comprimir la imagen como JPEG y
-// restarla a la original. Las zonas que vienen de otra imagen
-// recomprimida cambian de forma distinta -> se ven como "manchas".
-//
-// OJO: aquí hay I/O al disco (guardar y leer _temp.jpg), eso es serie
-// y no se puede paralelizar bien. Por eso este proceso es el que peor
-// escala con más hilos.
 Image<unsigned char> compute_ela(const Image<unsigned char> &image, int quality){
     std::cout<<"Computing ELA..."<<std::endl;
     auto begin = std::chrono::steady_clock::now();
@@ -168,21 +144,6 @@ int main(int argc, char **argv) {
     Image<unsigned char> image = load_from_file(argv[1]);
 
 
-    // -----------------------------------------------------------------
-    // Aquí va lo importante de la práctica: lanzamos los 5 procesos
-    // como tareas asíncronas con std::async. Como no dependen unos de
-    // otros, pueden correr todos en paralelo.
-    //
-    // std::ref(image) -> evita que async haga copia profunda de la
-    // imagen para cada tarea (las imágenes pueden ser grandes y se
-    // notaría mucho). Como solo leemos de ella, es seguro compartirla.
-    //
-    // NOTA: para la versión COMBINADA (async + OpenMP) hay que limitar
-    // los hilos OMP por proceso, si no se nos van de las manos. Con
-    // 5 procesos y 16 hilos cada uno serían 80 hilos para 16 cores
-    // lógicos. Descomentar la siguiente línea cuando se quiera probar:
-    // omp_set_num_threads(4);
-
     std::future<Image<unsigned char>> f_srm3    = std::async(std::launch::async, compute_srm, std::ref(image), 3);
     std::future<Image<unsigned char>> f_srm5    = std::async(std::launch::async, compute_srm, std::ref(image), 5);
     std::future<Image<unsigned char>> f_ela     = std::async(std::launch::async, compute_ela, std::ref(image), 90);
@@ -190,8 +151,6 @@ int main(int argc, char **argv) {
     std::future<Image<unsigned char>> f_dct_dir = std::async(std::launch::async, compute_dct, std::ref(image), block_size, false);
 
     // .get() espera a que la tarea termine y nos devuelve el resultado.
-    // Lo guardamos en disco según vamos recibiendo cada futuro.
-    // Los nombres de archivo coinciden con los que pide el enunciado.
     save_to_file("srm_kernel_3x3.png", f_srm3.get());
     save_to_file("srm_kernel_5x5.png", f_srm5.get());
     save_to_file("ela.png",            f_ela.get());
