@@ -1,0 +1,49 @@
+# Carpetas de compilación de CMake
+**/build/
+**/CMakeFiles/
+
+# Archivos generados por CMake
+**/CMakeCache.txt
+**/cmake_install.cmake
+**/Makefile
+
+# Binarios y objetos
+*.o
+*.obj
+*.exe
+*.out
+**/detect
+
+# Archivos temporales del programa
+**/_temp.jpg
+
+# Salidas del programa (PNG generados al ejecutar)
+**/srm_kernel_3x3.png
+**/srm_kernel_5x5.png
+**/ela.png
+**/dct_invert.png
+**/dct_direct.png
+
+# Backups
+*.bak
+**/initialize_vectors_cpp.bak
+
+# LaTeX (archivos auxiliares de compilación)
+*.aux
+*.log
+*.toc
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+*.bbl
+*.blg
+
+# Editores e IDEs
+.vscode/
+.idea/
+*.swp
+*~
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
