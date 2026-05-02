@@ -12,7 +12,7 @@ template <typename T> class Block;
 template <typename T> class Image{
 public:
   int width, height, channels;
-  std::shared_ptr<T[]> matrix;
+  std::shared_ptr<T[]> matrix;     // shared_ptr para que las copias compartan datos sin liarla con la memoria
   void release();
   Image();
   Image(int width, int height, int channels);
@@ -36,6 +36,10 @@ public:
 Image<unsigned char> load_from_file(const std::string &filename);
 void save_to_file(const std::string &filename, const Image<unsigned char> &image, int quality=100);
 
+
+// Block representa una sub-región (típicamente 8x8) de una imagen.
+// Lo usamos en la DCT para trocear la imagen sin copiar datos: cada
+// bloque guarda un puntero a la imagen original y sus offsets (i, j).
 template <typename T> class Block{
 public:
 	int i, j, size, depth, rowsize;
@@ -53,6 +57,9 @@ template <class T> void Block<T>::set_pixel(int row, int col, int channel, T val
     return matrix->set(row+j, col+i, channel, value);
 }
 
+
+// ---- Constructores y destructor ----
+
 template <class T> Image<T>::Image() {
     matrix = NULL;
 }
@@ -60,6 +67,9 @@ template <class T> Image<T>::Image(int width, int height, int channels) {
     this->width = width;
     this->height = height;
     this->channels = channels;
+    // Reservamos todo el buffer de golpe (height*width*channels), así
+    // tenemos los píxeles contiguos en memoria y luego podemos accederlos
+    // por índice (importante para que OpenMP funcione bien).
     matrix = std::shared_ptr<T[]>(new T[height*width*channels]);
 }
 template <class T> Image<T>::Image(const Image<T> &a) {
@@ -67,7 +77,7 @@ template <class T> Image<T>::Image(const Image<T> &a) {
     height = a.height;
     channels = a.channels;
     if (a.matrix != NULL) {
-        matrix = a.matrix;
+        matrix = a.matrix;     // misma memoria, no copiamos píxeles
     }
     else{
         matrix = NULL;
@@ -93,9 +103,11 @@ template <class T> Image<T> Image<T>::operator=(const Image<T> &a) {
 }
 
 template <class T> void Image<T>::release() {
-    matrix = NULL;  
+    matrix = NULL;     // el shared_ptr ya se encarga de liberar si nadie más lo apunta
 }
 
+
+// Acceso a píxel: linealiza la posición (row, col, channel) sobre el buffer.
 template <class T> T Image<T>::get(int row, int col, int channel) const{
     return matrix[row*width*channels + col*channels + channel];
 }
@@ -103,13 +115,12 @@ template <class T> void Image<T>::set(int row, int col, int channel, T value) {
     matrix[row*width*channels + col*channels + channel] = value;
 }
 
-// =====================================================================
-// Operadores aritméticos paralelizados con OpenMP
-// Cada iteración escribe en una posición distinta del nuevo buffer,
-// por lo que no hay condiciones de carrera. collapse(2) une los dos
-// bucles externos en un único espacio de iteración para mejorar el
-// balanceo entre hilos.
-// =====================================================================
+
+// Operadores aritméticos. Todos siguen el mismo patrón: un bucle sobre
+// (filas, columnas, canales) con collapse(2) en los dos bucles externos.
+// collapse(2) une los dos bucles en uno solo para que el reparto entre
+// hilos sea más fino y se balancee mejor.
+
 template <class T> Image<T> Image<T>::operator*(const Image<T>& other) const {
     assert(width == other.width && height == other.height && channels == other.channels);
     Image<T> new_image(width, height, channels);
@@ -122,9 +133,9 @@ template <class T> Image<T> Image<T>::operator*(const Image<T>& other) const {
             }
         }    
     }
-        
     return new_image;
 }
+
 template <class T> Image<T> Image<T>::operator*(float scalar) const {
     Image<T> new_image(width, height, channels);
     #pragma omp parallel for collapse(2)
@@ -136,9 +147,9 @@ template <class T> Image<T> Image<T>::operator*(float scalar) const {
             }
         }    
     }
-        
     return new_image;
 }
+
 template <class T> Image<T> Image<T>::operator+(const Image<T>& other) const {
     assert(width == other.width && height == other.height && channels == other.channels);
     Image<T> new_image(width, height, channels);
@@ -151,9 +162,9 @@ template <class T> Image<T> Image<T>::operator+(const Image<T>& other) const {
             }
         }    
     }
-        
     return new_image;
 }
+
 template <class T> Image<T> Image<T>::operator+(float scalar) const {
     Image<T> new_image(width, height, channels);
     #pragma omp parallel for collapse(2)
@@ -165,9 +176,9 @@ template <class T> Image<T> Image<T>::operator+(float scalar) const {
             }
         }    
     }
-        
     return new_image;
 }
+
 template <class T> Image<T> Image<T>::abs() const {
     Image<T> new_image(width, height, channels);
     #pragma omp parallel for collapse(2)
@@ -179,18 +190,16 @@ template <class T> Image<T> Image<T>::abs() const {
             }
         }    
     }
-        
     return new_image;
 }
 
-// =====================================================================
-// Convolución: el bucle más pesado de toda la aplicación.
-// Se paralelizan los dos bucles externos (j, i) con collapse(2).
-// El bucle del kernel (u, v) lo ejecuta cada hilo en serie porque el
-// kernel es muy pequeño (3x3 o 5x5) y no compensa anidar paralelismo.
-// La variable sum es local del cuerpo del bucle, así que es privada
-// por defecto en cada iteración.
-// =====================================================================
+
+// Convolución. Es el bucle más caro de toda la aplicación (lo usa SRM).
+// Solo paralelizamos los dos bucles externos (filas y columnas); el del
+// kernel se queda en serie porque es muy pequeño (3x3 o 5x5) y no
+// compensa el coste de meter más OpenMP dentro.
+// La variable sum se declara dentro del bucle, así que es privada por
+// iteración automáticamente.
 template <class T> Image<T> Image<T>::convolution(const Image<float> &kernel) const {
     assert(kernel.width%2 != 0 && kernel.height%2 != 0 && kernel.width == kernel.height && kernel.channels==1);
     int kernel_size = kernel.width;
@@ -202,6 +211,7 @@ template <class T> Image<T> Image<T>::convolution(const Image<float> &kernel) co
                 float sum = 0.0;
                 for(int u=0;u<kernel_size;u++){
                     for(int v=0;v<kernel_size;v++){
+                        // Manejo de bordes: si nos salimos, saltamos esa muestra.
                         int s = (j + u - kernel_size/2)%height;
                         int t = (i + v - kernel_size/2)%width;
                         if (s < 0 || s >= height || t < 0 || t >= width)
@@ -216,6 +226,8 @@ template <class T> Image<T> Image<T>::convolution(const Image<float> &kernel) co
     return convolved;
 }
 
+
+// Conversión de tipo (uchar -> float, float -> uchar, etc).
 template <class T> template <typename S> Image<S> Image<T>::convert() const {
     Image<S> new_image(width, height, channels);
     #pragma omp parallel for collapse(2)
@@ -227,12 +239,14 @@ template <class T> template <typename S> Image<S> Image<T>::convert() const {
             }
         }    
     }
-        
     return new_image;
 }
 
+
+// Pasar a escala de grises con la fórmula de luminancia estándar
+// (la misma que usan PAL/NTSC y JPEG): Y = 0.299 R + 0.587 G + 0.114 B.
 template <class T> Image<T> Image<T>::to_grayscale() const {
-    if (channels == 1) return convert<T>();
+    if (channels == 1) return convert<T>();   // si ya está en gris, no hacemos nada
     Image<T> image(width, height, 1);
     #pragma omp parallel for collapse(2)
     for(int j=0;j<height;j++){
@@ -243,19 +257,17 @@ template <class T> Image<T> Image<T>::to_grayscale() const {
     return image;
 }
 
-// =====================================================================
-// Normalización: dos fases.
-// Fase 1: encontrar min y max recorriendo toda la imagen. Es una
-//   reducción clásica → cláusulas reduction(min:...) y reduction(max:...)
-//   (disponibles desde OpenMP 3.1).
-// Fase 2: aplicar la transformación (x - min)/(max - min) píxel a
-//   píxel; cada iteración escribe en una posición distinta, sin
-//   condiciones de carrera.
-// =====================================================================
+
+// Normaliza la imagen al rango [0, 1]. Hay que hacerlo en dos fases:
+//  1) Buscar min y max -> aquí necesitamos reduction porque varios hilos
+//     leen y comparan al mismo tiempo. OpenMP nos da una copia local a
+//     cada hilo y al final combina los resultados.
+//  2) Aplicar la fórmula píxel a píxel -> esto sí es trivial de paralelizar.
 template <class T> Image<float> Image<T>::normalized() const {
     Image<float> new_image(width, height, channels);
     float max_value = -999999999;
     float min_value = 999999999;
+
     #pragma omp parallel for collapse(2) reduction(max:max_value) reduction(min:min_value)
     for(int j=0;j<height;j++)
     {
@@ -277,16 +289,14 @@ template <class T> Image<float> Image<T>::normalized() const {
             }
         }    
     }
-        
     return new_image;
 }
 
-// =====================================================================
-// get_blocks: NO se paraleliza.
-// El push_back de std::vector no es thread-safe (Tarea 0.3). Además
-// esta función es muy rápida en comparación con el resto, no merece
-// la pena tocarla.
-// =====================================================================
+
+// Trocea la imagen en bloques pequeños (típicamente 8x8) para la DCT.
+// Esta función NO la paralelizamos: push_back sobre std::vector no es
+// thread-safe (lo vimos en la Tarea 0.3) y además es muy rápida en
+// comparación con el resto, no compensa.
 template <class T> std::vector<Block<T>> Image<T>::get_blocks(int block_size) {
   	int depth = channels;
   	assert(width % block_size == 0 || height % block_size == 0);
